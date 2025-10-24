@@ -150,30 +150,79 @@ wss.on("connection", (twilioSocket) => {
     }
   });
 
-  // ---------- OpenAI → Twilio ----------
-  openaiSocket.on("message", (event) => {
-    try {
-      const msg = JSON.parse(event.toString());
+// ---------- Twilio → OpenAI ----------
+twilioSocket.on("message", (msg) => {
+  let data;
+  try {
+    const text = msg.toString();
+    if (!text.startsWith("{")) return;
+    data = JSON.parse(text);
+  } catch {
+    return;
+  }
 
-      if (msg.type === "response.output_audio.delta" && msg.delta) {
-        if (twilioSocket.readyState === WebSocket.OPEN) {
-          twilioSocket.send(
-            JSON.stringify({ event: "media", media: { payload: msg.delta } })
-          );
-        }
-      }
-
-      if (msg.type === "response.output_text.delta") {
-        console.log("💬 Heino siger:", msg.delta);
-      }
-
-      if (msg.type === "response.completed" && twilioSocket.readyState === WebSocket.OPEN) {
-        twilioSocket.send(JSON.stringify({ event: "mark", mark: { name: "done" } }));
-      }
-    } catch (err) {
-      console.error("Fejl i OpenAI event:", err);
+  if (data.event !== "media") {
+    console.log("📨 Twilio event:", data.event);
+    if (data.event === "stop" && openaiReady) {
+      console.log("🛑 Stop event — sender commit til OpenAI");
+      openaiSocket.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+      openaiSocket.send(
+        JSON.stringify({
+          type: "response.create",
+          response: {
+            modalities: ["audio", "text"],
+            instructions: "Svar højt på dansk, med lidt humor.",
+          },
+        })
+      );
     }
-  });
+    return;
+  }
+
+  try {
+    const payloadStr = data?.media?.payload;
+    if (!payloadStr) return;
+
+    const rawAudio = Buffer.from(payloadStr, "base64");
+
+    let pcm16;
+    try {
+      pcm16 = mulaw.decode(rawAudio);
+      if (!pcm16 || !pcm16.buffer) throw new Error("not mulaw");
+    } catch {
+      pcm16 = rawAudio; // PCM16 direkte
+    }
+
+    const base64Pcm = Buffer.from(pcm16.buffer || pcm16).toString("base64");
+
+    const payload = JSON.stringify({
+      type: "input_audio_buffer.append",
+      audio: base64Pcm,
+    });
+
+    if (openaiReady) openaiSocket.send(payload);
+    else bufferedAudio.push(payload);
+
+    // 🔁 Commit regelmæssigt hvert 2,5 sek.
+    if (openaiReady && !twilioSocket.commitTimer) {
+      twilioSocket.commitTimer = setInterval(() => {
+        console.log("🕑 Commit + Response trigger");
+        openaiSocket.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+        openaiSocket.send(
+          JSON.stringify({
+            type: "response.create",
+            response: {
+              modalities: ["audio", "text"],
+              instructions: "Svar højt og venligt på dansk.",
+            },
+          })
+        );
+      }, 2500);
+    }
+  } catch (err) {
+    console.error("❌ Fejl i Twilio lydbehandling:", err);
+  }
+});
 
   // ---------- Oprydning ----------
   twilioSocket.on("close", () => {
