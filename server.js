@@ -24,7 +24,7 @@ app.post("/voice", (req, res) => {
     { language: "da-DK", voice: "Polly.Mads" },
     "Forbindelsen er oprettet. Du taler nu med AI-assistenten Heino!"
   );
-  twiml.pause({ length: 180 }); // holder linjen åben i 3 min
+  twiml.pause({ length: 60 }); // holder linjen åben i 1 min
 
   res.type("text/xml");
   res.send(twiml.toString());
