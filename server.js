@@ -11,20 +11,19 @@ const app = express();
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-// Health check
+// health check
 app.get("/health", (_, res) => res.send("OK"));
 
-// Twilio webhook → starter Media Stream
+// Twilio webhook
 app.post("/voice", (req, res) => {
   const twiml = new twilio.twiml.VoiceResponse();
   const start = twiml.start();
   start.stream({ url: `wss://${req.headers.host}/media` });
-
   twiml.say(
     { language: "da-DK", voice: "Polly.Mads" },
     "Forbindelsen er oprettet. Du taler nu med AI-assistenten Heino!"
   );
-  twiml.pause({ length: 120 }); // holder linjen åben i 2 minutter
+  twiml.pause({ length: 120 });
   res.type("text/xml").send(twiml.toString());
 });
 
@@ -50,8 +49,6 @@ wss.on("connection", (twilioSocket) => {
   openaiSocket.on("open", () => {
     console.log("🧠 OpenAI Realtime API connected");
     openaiReady = true;
-
-    // Start Heino-sessionen
     openaiSocket.send(
       JSON.stringify({
         type: "session.update",
@@ -61,29 +58,33 @@ wss.on("connection", (twilioSocket) => {
           input_audio_format: "pcm16",
           output_audio_format: "mulaw",
           instructions: `
-            Du er Heino, en sjov, venlig dansk AI-assistent.
-            Du taler afslappet og hjælper dem, der ringer til Jens og Kim.
-            Stil spørgsmål og svar med humor på dansk.
+            Du er Heino, en venlig og humoristisk dansk AI-assistent.
+            Du hjælper dem, der ringer til Jens og Kim, med spørgsmål og hyggesnak.
+            Tal tydeligt på dansk og svar med lyd.
           `,
         },
       })
     );
-
-    bufferedAudio.forEach((chunk) => openaiSocket.send(chunk));
+    bufferedAudio.forEach((c) => openaiSocket.send(c));
     bufferedAudio.length = 0;
   });
 
   // ---------- Twilio → OpenAI ----------
   twilioSocket.on("message", (msg) => {
+    let data;
     try {
-      const data = JSON.parse(msg.toString());
+      // Twilio kan sende binære frames → prøv kun at parse tekst
+      const text = msg.toString();
+      if (!text.startsWith("{")) return; // ignorer ikke-JSON
+      data = JSON.parse(text);
+    } catch {
+      return; // spring over uforståelige frames
+    }
 
-      // Vi ignorerer events uden gyldig lydpayload
-      if (data.event !== "media" || !data.media || typeof data.media.payload !== "string") {
-        return;
-      }
+    // tjek at vi faktisk har lyddata
+    if (!data || data.event !== "media" || !data.media?.payload) return;
 
-      // Konverter μ-law fra Twilio → PCM16 → base64
+    try {
       const mulawAudio = Buffer.from(data.media.payload, "base64");
       const pcm16 = mulaw.decode(mulawAudio);
       const base64Pcm = Buffer.from(pcm16.buffer).toString("base64");
@@ -96,7 +97,6 @@ wss.on("connection", (twilioSocket) => {
       if (openaiReady) openaiSocket.send(payload);
       else bufferedAudio.push(payload);
 
-      // Commit og bed om svar løbende
       if (openaiReady && !twilioSocket.commitTimer) {
         twilioSocket.commitTimer = setInterval(() => {
           openaiSocket.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
@@ -106,14 +106,14 @@ wss.on("connection", (twilioSocket) => {
               response: {
                 modalities: ["audio", "text"],
                 instructions:
-                  "Svar højt med dansk tale, ikke kun tekst. Brug en venlig og sjov tone.",
+                  "Svar højt med dansk stemme — ikke kun tekst.",
               },
             })
           );
         }, 2500);
       }
     } catch (err) {
-      console.error("Fejl i Twilio data:", err);
+      console.error("❌ Fejl i Twilio lydbehandling:", err);
     }
   });
 
@@ -122,18 +122,10 @@ wss.on("connection", (twilioSocket) => {
     try {
       const msg = JSON.parse(event.toString());
 
-      if (msg.type === "response.output_audio.delta") {
-        if (!msg.delta || typeof msg.delta !== "string") {
-          // spring tomme events over
-          return;
-        }
-
+      if (msg.type === "response.output_audio.delta" && msg.delta) {
         if (twilioSocket.readyState === WebSocket.OPEN) {
           twilioSocket.send(
-            JSON.stringify({
-              event: "media",
-              media: { payload: msg.delta },
-            })
+            JSON.stringify({ event: "media", media: { payload: msg.delta } })
           );
         }
       }
