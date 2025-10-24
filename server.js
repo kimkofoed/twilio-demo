@@ -6,6 +6,7 @@ const http = require("http");
 const WebSocket = require("ws");
 const { Buffer } = require("buffer");
 const mulaw = require("mulaw-js");
+const fetch = require("node-fetch");
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
@@ -14,10 +15,35 @@ app.use(express.urlencoded({ extended: true }));
 // Health check
 app.get("/health", (req, res) => res.send("OK"));
 
-// Twilio webhook → starter Media Stream
+/**
+ * 🧪 Test OpenAI-nøgle direkte på Render
+ * Gå til: https://<dit-render-navn>.onrender.com/test-key
+ */
+app.get("/test-key", async (req, res) => {
+  try {
+    const response = await fetch("https://api.openai.com/v1/models", {
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+    });
+    const text = await response.text();
+
+    if (response.ok) {
+      console.log("✅ OpenAI key virker!");
+      res.type("application/json").send(text);
+    } else {
+      console.error("❌ OpenAI key test fejlede:", text);
+      res.status(response.status).json({ error: "Key test failed", details: text });
+    }
+  } catch (err) {
+    console.error("Fejl under OpenAI test:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * 📞 Twilio webhook → starter Media Stream
+ */
 app.post("/voice", (req, res) => {
   const twiml = new twilio.twiml.VoiceResponse();
-
   const start = twiml.start();
   start.stream({ url: `wss://${req.headers.host}/media` });
 
@@ -26,21 +52,18 @@ app.post("/voice", (req, res) => {
     "Forbindelsen er oprettet. Du taler nu med AI-assistenten Heino!"
   );
 
-  // holder linjen åben i 2 minutter
-  twiml.pause({ length: 120 });
-
+  twiml.pause({ length: 120 }); // holder linjen åben i 2 min
   res.type("text/xml");
   res.send(twiml.toString());
 });
 
-// WebSocket-server til Twilio Media Streams
+// WebSocket-server (Twilio ↔ OpenAI)
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: "/media" });
 
 wss.on("connection", (twilioSocket) => {
   console.log("🔊 Twilio stream connected");
 
-  // Opret forbindelse til OpenAI Realtime
   const openaiSocket = new WebSocket(
     "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01",
     {
@@ -54,110 +77,92 @@ wss.on("connection", (twilioSocket) => {
   let openaiReady = false;
   const bufferedAudio = [];
 
-  // Når OpenAI socket er klar
+  // Når OpenAI-socket åbner
   openaiSocket.on("open", () => {
     console.log("🧠 OpenAI Realtime API connected");
     openaiReady = true;
 
-    // Heinos personlighed + lydformat
-    openaiSocket.send(
-      JSON.stringify({
-        type: "session.update",
-        session: {
-          modalities: ["audio", "text"],
-          voice: "alloy",
-          input_audio_format: "pcm16",
-          output_audio_format: "mulaw",
-          instructions: `
-            Du er Heino, en sjov, venlig dansk AI-assistent.
-            Du taler afslappet og hjælper dem, der ringer til Jens og Kim.
-            Stil et par spørgsmål for at forstå, hvorfor de ringer, og svar med lidt humor.
-          `,
-        },
-      })
-    );
+    // Konfigurer Heino-sessionen
+    openaiSocket.send(JSON.stringify({
+      type: "session.update",
+      session: {
+        modalities: ["audio", "text"],
+        voice: "alloy",
+        input_audio_format: "pcm16",
+        output_audio_format: "mulaw",
+        instructions: `
+          Du er Heino, en sjov og venlig dansk AI-assistent.
+          Du taler afslappet og hjælper dem, der ringer til Jens og Kim.
+          Stil et par spørgsmål for at forstå, hvorfor de ringer, og svar med lidt humor.
+        `,
+      },
+    }));
 
-    // 👇 Send Heino et start-svar straks for test
-    openaiSocket.send(
-      JSON.stringify({
-        type: "response.create",
-        response: {
-          modalities: ["audio", "text"],
-          instructions: "Sig højt: 'Hej, jeg er Heino, hvordan går det?' på dansk.",
-        },
-      })
-    );
+    // Start med en velkomst
+    openaiSocket.send(JSON.stringify({
+      type: "response.create",
+      response: {
+        modalities: ["audio", "text"],
+        instructions: "Sig højt: 'Hej, jeg er Heino. Hvordan går det?' på dansk.",
+      },
+    }));
 
-    // Afsend evt. bufferet lyd
     bufferedAudio.forEach((chunk) => openaiSocket.send(chunk));
     bufferedAudio.length = 0;
   });
 
   // ---------- Twilio → OpenAI ----------
   twilioSocket.on("message", (msg) => {
-    let data;
     try {
       const text = msg.toString();
       if (!text.startsWith("{")) return;
-      data = JSON.parse(text);
-    } catch {
-      return;
-    }
+      const data = JSON.parse(text);
 
-    if (data.event !== "media") {
-      console.log("📨 Twilio event:", data.event);
-      if (data.event === "stop" && openaiReady) {
-        console.log("🛑 Stop event — sender commit til OpenAI");
-        openaiSocket.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-        openaiSocket.send(
-          JSON.stringify({
+      if (data.event !== "media") {
+        console.log("📨 Twilio event:", data.event);
+
+        if (data.event === "stop" && openaiReady) {
+          console.log("🛑 Stop event — sender commit til OpenAI");
+          openaiSocket.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+          openaiSocket.send(JSON.stringify({
             type: "response.create",
             response: {
               modalities: ["audio", "text"],
-              instructions: "Svar højt og venligt på dansk, med lidt humor.",
+              instructions: "Svar højt og venligt på dansk med lidt humor.",
             },
-          })
-        );
+          }));
+        }
+        return;
       }
-      return;
-    }
 
-    try {
       const payloadStr = data?.media?.payload;
       if (!payloadStr) return;
 
       const rawAudio = Buffer.from(payloadStr, "base64");
       let pcm16;
-      try {
-        pcm16 = mulaw.decode(rawAudio);
-      } catch {
-        pcm16 = rawAudio;
-      }
+      try { pcm16 = mulaw.decode(rawAudio); } catch { pcm16 = rawAudio; }
 
       const base64Pcm = Buffer.from(pcm16.buffer || pcm16).toString("base64");
-
-      const payload = JSON.stringify({
-        type: "input_audio_buffer.append",
-        audio: base64Pcm,
-      });
+      const payload = JSON.stringify({ type: "input_audio_buffer.append", audio: base64Pcm });
 
       if (openaiReady) openaiSocket.send(payload);
       else bufferedAudio.push(payload);
 
-      // 🔁 Commit hver 2,5 sek for løbende respons
       if (openaiReady && !twilioSocket.commitTimer) {
         twilioSocket.commitTimer = setInterval(() => {
           console.log("🕑 Commit + Response trigger");
           openaiSocket.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-          openaiSocket.send(
-            JSON.stringify({
-              type: "response.create",
-              response: {
-                modalities: ["audio", "text"],
-                instructions: "Svar højt på dansk, med lidt humor.",
-              },
-            })
-          );
+          openaiSocket.send(JSON.stringify({
+            type: "response.create",
+            response: {
+              modalities: ["audio", "text"],
+              instructions: `
+                Du er Heino, en venlig dansk AI-assistent.
+                Du hører hvad der bliver sagt, og svarer højt og tydeligt på dansk.
+                Brug en afslappet og sjov tone. Hvis du ikke hører noget tydeligt, sig: "Jeg hørte dig ikke helt, kan du gentage det?"
+              `,
+            },
+          }));
         }, 2500);
       }
     } catch (err) {
@@ -169,16 +174,13 @@ wss.on("connection", (twilioSocket) => {
   openaiSocket.on("message", (event) => {
     try {
       const msg = JSON.parse(event.toString());
-
       if (msg.type === "response.output_audio.delta" && msg.delta) {
         if (twilioSocket.readyState === WebSocket.OPEN) {
           console.log("🎙️ Sender lyd fra Heino til Twilio");
-          twilioSocket.send(
-            JSON.stringify({
-              event: "media",
-              media: { payload: msg.delta },
-            })
-          );
+          twilioSocket.send(JSON.stringify({
+            event: "media",
+            media: { payload: msg.delta },
+          }));
         }
       }
 
@@ -194,7 +196,7 @@ wss.on("connection", (twilioSocket) => {
     }
   });
 
-  // Lukning / oprydning
+  // Lukning
   twilioSocket.on("close", () => {
     clearInterval(twilioSocket.commitTimer);
     console.log("🔕 Twilio stream closed");
