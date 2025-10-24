@@ -1,27 +1,25 @@
-// server.js
+// server.js — Heino på Gemini Live ⚡️
 require("dotenv").config();
 const express = require("express");
 const twilio = require("twilio");
 const http = require("http");
 const WebSocket = require("ws");
-const fetch = require("node-fetch");
 
 const app = express();
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-// 🩺 Health check
-app.get("/health", (req, res) => res.send("OK ✅"));
+// Health check
+app.get("/health", (req, res) => res.send("✅ Server kører — Heino (Gemini Live) er klar!"));
 
-// 🔍 Test din OpenAI key direkte
+// 🔍 Test din Gemini API key
 app.get("/test-key", async (req, res) => {
   try {
-    console.log("🔑 Tester OpenAI API-key mod /models ...");
-    const response = await fetch("https://api.openai.com/v1/models", {
-      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-    });
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${process.env.GEMINI_API_KEY}`
+    );
     const text = await response.text();
-    console.log("📦 Svar fra OpenAI:", text.slice(0, 200) + "...");
+    console.log("📦 Gemini /models svar:", text.slice(0, 300) + "...");
     res.status(response.status).type("application/json").send(text);
   } catch (err) {
     console.error("💥 Fejl under test-key:", err);
@@ -40,87 +38,94 @@ app.post("/voice", (req, res) => {
 
   twiml.say(
     { language: "da-DK", voice: "Polly.Mads" },
-    "Forbindelsen er oprettet. Du taler nu med AI-assistenten Heino!"
+    "Forbindelsen er oprettet. Du taler nu med AI-assistenten Heino — drevet af Gemini!"
   );
   twiml.pause({ length: 120 });
   res.type("text/xml");
   res.send(twiml.toString());
 });
 
-// 🎧 WebSocket: Twilio ↔ OpenAI
+// 🎧 WebSocket: Twilio ↔ Gemini
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: "/media" });
 
 wss.on("connection", (twilioSocket) => {
   console.log("🔊 Twilio stream connected");
 
-  // Opret realtime forbindelse til OpenAI GA API
-  console.log("🔌 Forbinder til OpenAI Realtime via gpt-audio ...");
-  const openaiSocket = new WebSocket(
-    "wss://api.openai.com/v1/realtime?model=gpt-audio",
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      },
-    }
-  );
+  // 🔌 Forbind til Gemini Live
+  const GEMINI_WS_URL =
+    "wss://generativelanguage.googleapis.com/v1beta/live:connect?alt=ws&key=" +
+    process.env.GEMINI_API_KEY;
 
-  let openaiReady = false;
+  console.log("🔌 Forbinder til Gemini Live API...");
+  const geminiSocket = new WebSocket(GEMINI_WS_URL);
+
+  let geminiReady = false;
   const audioBuffer = [];
 
-  openaiSocket.on("open", () => {
-    console.log("🧠 OpenAI Realtime API connected!");
-    openaiReady = true;
+  geminiSocket.on("open", () => {
+    console.log("🧠 Gemini Live connected!");
+    geminiReady = true;
 
-    // Start session (nyt format til GA)
-    const sessionMsg = {
-      type: "session.update",
-      session: {
-        type: "realtime",
-        model: "gpt-audio",
-        instructions: `
-          Du er Heino, en sjov og venlig dansk AI-assistent.
-          Du taler afslappet og hjælper dem, der ringer til Jens og Kim.
-          Stil et par spørgsmål for at forstå, hvorfor de ringer, og svar med lidt humor.
-          Svar højt og tydeligt.
-        `,
-        audio: {
-          output: { voice: "alloy" },
-        },
+    // 🔧 Start session med dansk stemme
+    const setupMsg = {
+      setup: {
+        model: "models/gemini-2.5-flash-live",
+        voiceConfig: { voiceName: "da-DK-Wavenet-A" },
+        inputConfig: { encoding: "MULAW", sampleRateHertz: 8000 },
+        outputConfig: { encoding: "MULAW", sampleRateHertz: 8000 },
       },
     };
-    console.log("📤 Sender session.update → OpenAI");
-    openaiSocket.send(JSON.stringify(sessionMsg));
+    geminiSocket.send(JSON.stringify(setupMsg));
 
-    // Velkomstbesked
-    console.log("📤 Beder Heino sige velkomst...");
-    openaiSocket.send(
+    // 💬 Velkomst
+    geminiSocket.send(
       JSON.stringify({
-        type: "response.create",
-        response: {
-          modalities: ["audio", "text"],
-          instructions: "Sig højt: 'Hej, jeg er Heino! Hvad så, hvordan går det?'",
-        },
+        data: { text: "Hej, jeg er Heino på Gemini! Hvad så, hvordan går det?" },
       })
     );
 
-    // Send bufferet lyd hvis der var noget
     if (audioBuffer.length > 0) {
-      console.log(`📤 Sender ${audioBuffer.length} bufferede lyd-chunks`);
-      audioBuffer.forEach((chunk) => openaiSocket.send(chunk));
+      console.log(`📤 Sender ${audioBuffer.length} bufferede lydchunks`);
+      audioBuffer.forEach((chunk) => geminiSocket.send(chunk));
       audioBuffer.length = 0;
     }
   });
 
-  openaiSocket.on("error", (err) => {
-    console.error("💥 OpenAI socket error:", err.message);
+  geminiSocket.on("message", (event) => {
+    const msgStr = event.toString();
+    console.log("📩 RAW fra Gemini:", msgStr.slice(0, 200));
+
+    try {
+      const msg = JSON.parse(msgStr);
+
+      // Gemini sender audio-data som base64
+      if (msg?.data?.audio) {
+        if (twilioSocket.readyState === WebSocket.OPEN) {
+          twilioSocket.send(
+            JSON.stringify({ event: "media", media: { payload: msg.data.audio } })
+          );
+          console.log("🎙️ Heino sender lyd tilbage til Twilio");
+        }
+      }
+
+      if (msg?.data?.text) {
+        console.log("💬 Heino siger:", msg.data.text);
+      }
+    } catch {
+      // Ikke alle beskeder er JSON (nogle heartbeat-pings)
+    }
   });
 
-  openaiSocket.on("close", (code, reason) => {
-    console.warn("⚠️ OpenAI socket closed:", code, reason.toString());
+  geminiSocket.on("close", (code, reason) => {
+    console.warn("⚠️ Gemini socket closed:", code, reason.toString());
   });
 
-  // 🔁 Twilio → OpenAI
+  geminiSocket.on("error", (err) => {
+    console.error("💥 Gemini socket error:", err.message);
+  });
+
+  // 🔁 Twilio → Gemini
   twilioSocket.on("message", (msg) => {
     try {
       const text = msg.toString();
@@ -130,17 +135,10 @@ wss.on("connection", (twilioSocket) => {
       if (data.event !== "media") {
         console.log("📨 Twilio event:", data.event);
         if (data.event === "stop") {
-          console.log("🛑 Stop event modtaget — afslutter commit");
-          if (openaiReady) {
-            openaiSocket.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-            openaiSocket.send(
-              JSON.stringify({
-                type: "response.create",
-                response: {
-                  modalities: ["audio", "text"],
-                  instructions: "Afslut samtalen med et venligt dansk farvel.",
-                },
-              })
+          console.log("🛑 Stop event modtaget — afslutter session");
+          if (geminiReady) {
+            geminiSocket.send(
+              JSON.stringify({ data: { text: "Tak for snakken, ha’ en god dag!" } })
             );
           }
         }
@@ -148,77 +146,23 @@ wss.on("connection", (twilioSocket) => {
       }
 
       if (!data.media?.payload) return;
-
-      console.log(`🎧 Modtog lydchunk (${data.media.payload.length} bytes)`);
-
       const payload = JSON.stringify({
-        type: "input_audio_buffer.append",
-        audio: data.media.payload,
+        data: { audio: data.media.payload },
       });
 
-      if (openaiReady) openaiSocket.send(payload);
+      if (geminiReady) geminiSocket.send(payload);
       else audioBuffer.push(payload);
-
-      // Auto commit hvert 3. sekund
-      if (openaiReady && !twilioSocket.commitTimer) {
-        twilioSocket.commitTimer = setInterval(() => {
-          console.log("🕑 Commit + response.create trigger");
-          openaiSocket.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-          openaiSocket.send(
-            JSON.stringify({
-              type: "response.create",
-              response: {
-                modalities: ["audio", "text"],
-                instructions: `
-                  Du er Heino, en sjov dansk AI-assistent.
-                  Reager på det, du hører, med venlige, sjove og naturlige svar.
-                `,
-              },
-            })
-          );
-        }, 3000);
-      }
     } catch (err) {
-      console.error("💥 Fejl i Twilio → OpenAI håndtering:", err);
-    }
-  });
-
-  // 🔁 OpenAI → Twilio
-  openaiSocket.on("message", (event) => {
-    try {
-      const msg = JSON.parse(event.toString());
-
-      if (msg.type === "response.output_audio.delta") {
-        console.log("🎙️ Heino sender lyd tilbage!");
-        if (twilioSocket.readyState === WebSocket.OPEN) {
-          twilioSocket.send(
-            JSON.stringify({ event: "media", media: { payload: msg.delta } })
-          );
-        }
-      }
-
-      if (msg.type === "response.output_text.delta") {
-        console.log("💬 Heino siger:", msg.delta);
-      }
-
-      if (msg.type === "response.completed") {
-        console.log("✅ OpenAI response færdig!");
-        if (twilioSocket.readyState === WebSocket.OPEN) {
-          twilioSocket.send(JSON.stringify({ event: "mark", mark: { name: "done" } }));
-        }
-      }
-    } catch (err) {
-      console.error("💥 Fejl i OpenAI → Twilio håndtering:", err);
+      console.error("💥 Fejl i Twilio → Gemini håndtering:", err);
     }
   });
 
   twilioSocket.on("close", () => {
-    clearInterval(twilioSocket.commitTimer);
     console.log("🔕 Twilio stream closed");
-    if (openaiSocket.readyState === WebSocket.OPEN) openaiSocket.close();
+    if (geminiSocket.readyState === WebSocket.OPEN) geminiSocket.close();
   });
 });
 
 // 🚀 Start server
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🚀 Server kører på port ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 Heino (Gemini Live) kører på port ${PORT}`));
