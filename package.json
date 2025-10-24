@@ -12,9 +12,9 @@
   "type": "commonjs",
   "description": "",
   "dependencies": {
-    "@openai/agents": "^0.1.11",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
+    "mulaw-js": "^1.0.1",
     "twilio": "^5.10.3",
     "ws": "^8.18.3"
   }
