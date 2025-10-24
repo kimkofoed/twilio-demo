@@ -64,16 +64,16 @@ const wss = new WebSocket.Server({ server, path: "/media" });
 wss.on("connection", (twilioSocket) => {
   console.log("🔊 Twilio stream connected");
 
-  const openaiSocket = new WebSocket(
-    "wss://api.openai.com/v1/realtime?model=gpt-4o-audio-preview-2024-10-01",
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        "OpenAI-Beta": "realtime=v1",
-        "Sec-WebSocket-Protocol": "realtime", // 👈 vigtig header!
-      },
-    }
-  );
+const openaiSocket = new WebSocket(
+  "wss://api.openai.com/v1/realtime?model=gpt-4o-audio-preview-2024-10-01",
+  "realtime", // 👈 korrekt protokol
+  {
+    headers: {
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      "OpenAI-Beta": "realtime=v1",
+    },
+  }
+);
 
   let openaiReady = false;
   const bufferedAudio = [];
