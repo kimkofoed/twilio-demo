@@ -11,19 +11,21 @@ const app = express();
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-// health check
+// Health check
 app.get("/health", (_, res) => res.send("OK"));
 
-// Twilio webhook
+// Twilio webhook → starter Media Stream
 app.post("/voice", (req, res) => {
   const twiml = new twilio.twiml.VoiceResponse();
   const start = twiml.start();
   start.stream({ url: `wss://${req.headers.host}/media` });
+
   twiml.say(
     { language: "da-DK", voice: "Polly.Mads" },
     "Forbindelsen er oprettet. Du taler nu med AI-assistenten Heino!"
   );
-  twiml.pause({ length: 120 });
+
+  twiml.pause({ length: 120 }); // holder linjen åben i 2 minutter
   res.type("text/xml").send(twiml.toString());
 });
 
@@ -46,9 +48,11 @@ wss.on("connection", (twilioSocket) => {
   let openaiReady = false;
   const bufferedAudio = [];
 
+  // Når OpenAI socket er klar
   openaiSocket.on("open", () => {
     console.log("🧠 OpenAI Realtime API connected");
     openaiReady = true;
+
     openaiSocket.send(
       JSON.stringify({
         type: "session.update",
@@ -58,14 +62,16 @@ wss.on("connection", (twilioSocket) => {
           input_audio_format: "pcm16",
           output_audio_format: "mulaw",
           instructions: `
-            Du er Heino, en venlig og humoristisk dansk AI-assistent.
-            Du hjælper dem, der ringer til Jens og Kim, med spørgsmål og hyggesnak.
-            Tal tydeligt på dansk og svar med lyd.
+            Du er Heino, en sjov og venlig dansk AI-assistent.
+            Du taler afslappet og hjælper dem, der ringer til Jens og Kim.
+            Stil spørgsmål og svar med lidt humor.
+            Tal tydeligt på dansk.
           `,
         },
       })
     );
-    bufferedAudio.forEach((c) => openaiSocket.send(c));
+
+    bufferedAudio.forEach((chunk) => openaiSocket.send(chunk));
     bufferedAudio.length = 0;
   });
 
@@ -73,18 +79,26 @@ wss.on("connection", (twilioSocket) => {
   twilioSocket.on("message", (msg) => {
     let data;
     try {
-      // Twilio kan sende binære frames → prøv kun at parse tekst
       const text = msg.toString();
-      if (!text.startsWith("{")) return; // ignorer ikke-JSON
+      if (!text.startsWith("{")) return; // Ignorer binære frames
       data = JSON.parse(text);
     } catch {
-      return; // spring over uforståelige frames
+      return; // Spring uforståelige frames over
     }
 
-    // tjek at vi faktisk har lyddata
-    if (!data || data.event !== "media" || !data.media?.payload) return;
+    // Stop hvis ingen gyldig lydpayload
+    if (
+      !data ||
+      data.event !== "media" ||
+      !data.media ||
+      typeof data.media.payload !== "string" ||
+      data.media.payload.length < 4
+    ) {
+      return;
+    }
 
     try {
+      // Konverter μ-law → PCM16 → base64
       const mulawAudio = Buffer.from(data.media.payload, "base64");
       const pcm16 = mulaw.decode(mulawAudio);
       const base64Pcm = Buffer.from(pcm16.buffer).toString("base64");
@@ -97,6 +111,7 @@ wss.on("connection", (twilioSocket) => {
       if (openaiReady) openaiSocket.send(payload);
       else bufferedAudio.push(payload);
 
+      // Commit & bed om svar løbende
       if (openaiReady && !twilioSocket.commitTimer) {
         twilioSocket.commitTimer = setInterval(() => {
           openaiSocket.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
@@ -105,8 +120,7 @@ wss.on("connection", (twilioSocket) => {
               type: "response.create",
               response: {
                 modalities: ["audio", "text"],
-                instructions:
-                  "Svar højt med dansk stemme — ikke kun tekst.",
+                instructions: "Svar højt med dansk stemme, ikke kun tekst.",
               },
             })
           );
@@ -125,7 +139,10 @@ wss.on("connection", (twilioSocket) => {
       if (msg.type === "response.output_audio.delta" && msg.delta) {
         if (twilioSocket.readyState === WebSocket.OPEN) {
           twilioSocket.send(
-            JSON.stringify({ event: "media", media: { payload: msg.delta } })
+            JSON.stringify({
+              event: "media",
+              media: { payload: msg.delta },
+            })
           );
         }
       }
