@@ -57,7 +57,7 @@ wss.on("connection", (twilioSocket) => {
   // Opret realtime forbindelse til OpenAI
   console.log("🔌 Forbinder til OpenAI Realtime via gpt-audio ...");
   const openaiSocket = new WebSocket(
-    "wss://api.openai.com/v1/realtime?model=gpt-audio",
+    "wss://api.openai.com/v1/realtime?model=gpt-4o-mini-realtime-preview-2024-12-17",
     {
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
