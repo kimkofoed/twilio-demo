@@ -65,7 +65,7 @@ wss.on("connection", (twilioSocket) => {
   console.log("🔊 Twilio stream connected");
 
   const openaiSocket = new WebSocket(
-    "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01",
+    "wss://api.openai.com/v1/realtime?model=gpt-4o-audio-preview-2024-10-01",
     {
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
