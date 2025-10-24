@@ -84,42 +84,31 @@ wss.on("connection", (twilioSocket) => {
   });
 
   // Twilio → OpenAI (indgående lyd)
-  twilioSocket.on("message", (msg) => {
-    try {
-      const data = JSON.parse(msg.toString());
+twilioSocket.on("message", (msg) => {
+  try {
+    const data = JSON.parse(msg.toString());
 
-      if (data.event === "media") {
-        const mulawAudio = Buffer.from(data.media.payload, "base64");
-        const pcm16 = mulaw.decode(mulawAudio);
-        const base64Pcm = Buffer.from(pcm16.buffer).toString("base64");
+    // Ignorér events uden lyd
+    if (data.event !== "media" || !data.media?.payload) {
+      return;
+    }
 
-        const payload = JSON.stringify({
-          type: "input_audio_buffer.append",
-          audio: base64Pcm,
-        });
+    // Nu ved vi, der ER base64 μ-law lyd
+    const mulawAudio = Buffer.from(data.media.payload, "base64");
+    const pcm16 = mulaw.decode(mulawAudio);
+    const base64Pcm = Buffer.from(pcm16.buffer).toString("base64");
 
-        if (openaiReady) openaiSocket.send(payload);
-        else bufferedAudio.push(payload);
+    const payload = JSON.stringify({
+      type: "input_audio_buffer.append",
+      audio: base64Pcm,
+    });
 
-        // løbende commit hvert 2,5 sek
-        if (openaiReady && !twilioSocket.commitTimer) {
-          twilioSocket.commitTimer = setInterval(() => {
-            openaiSocket.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-            openaiSocket.send(
-              JSON.stringify({
-                type: "response.create",
-                response: {
-                  modalities: ["audio", "text"],
-                  instructions:
-                    "Svar med lyd og tale, ikke kun tekst. Brug dansk sprog og din stemme.",
-                },
-              })
-            );
-          }, 2500);
-        }
-      }
+    if (openaiReady) openaiSocket.send(payload);
+    else bufferedAudio.push(payload);
 
-      if (data.event === "stop" && openaiReady) {
+    // løbende commit hvert 2,5 sek
+    if (openaiReady && !twilioSocket.commitTimer) {
+      twilioSocket.commitTimer = setInterval(() => {
         openaiSocket.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
         openaiSocket.send(
           JSON.stringify({
@@ -131,11 +120,12 @@ wss.on("connection", (twilioSocket) => {
             },
           })
         );
-      }
-    } catch (err) {
-      console.error("Fejl i Twilio data:", err);
+      }, 2500);
     }
-  });
+  } catch (err) {
+    console.error("Fejl i Twilio data:", err);
+  }
+});
 
   // OpenAI → Twilio (udgående lyd)
   openaiSocket.on("message", (event) => {
