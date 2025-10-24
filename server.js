@@ -11,7 +11,7 @@ app.use(express.json());
 
 /**
  * GET /health
- * Bruges af Render (og dig) til at tjekke at serveren kører.
+ * Bruges af Render og dig selv til at tjekke, at serveren kører.
  */
 app.get("/health", (req, res) => {
   res.send("OK");
@@ -24,37 +24,43 @@ app.get("/health", (req, res) => {
  * til vores egen WebSocket-server.
  */
 app.post("/voice", (req, res) => {
-  const twiml = new twilio.twiml.VoiceResponse();
+  try {
+    const twiml = new twilio.twiml.VoiceResponse();
 
-  const start = twiml.start();
-  // Twilio åbner en stream til vores egen server
-  start.stream({
-    url: `wss://${req.headers.host}/media`,
-  });
+    // Twilio starter en stream til vores WebSocket-server
+    const start = twiml.start();
+    start.stream({
+      url: `wss://${req.headers.host}/media`,
+    });
 
-  // Fallback — hvis streaming fejler
-  twiml.say(
-    { language: "da-DK", voice: "Polly.Mads" },
-    "Forbindelsen er oprettet. Du taler nu med AI assistenten Heino!"
-  );
-  twiml.pause({ length: 10 }); // holder linjen åben lidt tid
+    // Simpel velkomstbesked, så vi kan høre, at forbindelsen virker
+    twiml.say(
+      { language: "da-DK", voice: "Polly.Mads" },
+      "Forbindelsen er oprettet. Du taler nu med AI-assistenten Heino!"
+    );
 
-  res.type("text/xml");
-  res.send(twiml.toString());
+    // Hold linjen åben lidt, så Twilio ikke lukker for hurtigt
+    twiml.pause({ length: 10 });
+
+    res.type("text/xml");
+    res.send(twiml.toString());
+  } catch (error) {
+    console.error("Fejl i /voice route:", error);
+    res.status(500).send("Internal Server Error");
+  }
 });
 
 /**
  * WebSocket /media
- * Her modtager vi lyd fra Twilio (base64-encoded chunks)
- * og videresender det til OpenAI Realtime API.
+ * Her modtager vi lyd fra Twilio og sender den videre til OpenAI Realtime API.
  */
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: "/media" });
 
 wss.on("connection", async (twilioSocket) => {
-  console.log("Twilio stream connected");
+  console.log("🔊 Twilio stream connected");
 
-  // Opret forbindelse til OpenAI Realtime API
+  // Forbindelse til OpenAI Realtime API
   const openaiSocket = new WebSocket(
     "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01",
     {
@@ -65,11 +71,9 @@ wss.on("connection", async (twilioSocket) => {
     }
   );
 
-  // Når OpenAI er klar
   openaiSocket.on("open", () => {
-    console.log("OpenAI Realtime API connected");
+    console.log("🧠 OpenAI Realtime API connected");
 
-    // Send AI-agentens personlighed / instruktioner
     const agentPrompt = `
       Du er Heino, en venlig dansk AI-assistent.
       Du taler roligt og hjælper dem, der ringer til Jens og Kim.
@@ -79,9 +83,7 @@ wss.on("connection", async (twilioSocket) => {
 
     const initMessage = {
       type: "session.update",
-      session: {
-        instructions: agentPrompt,
-      },
+      session: { instructions: agentPrompt },
     };
 
     openaiSocket.send(JSON.stringify(initMessage));
@@ -89,8 +91,9 @@ wss.on("connection", async (twilioSocket) => {
 
   // Når Twilio sender lyd
   twilioSocket.on("message", (msg) => {
-    // Her modtager vi Twilio lydstream (base64)
-    // TODO: Her kan vi senere sende selve lyddataen videre til OpenAI
+    // TODO: Her skal lyd videresendes til OpenAI (senere)
+    // lige nu logger vi bare, at der er aktivitet
+    console.log("🎧 Modtog lyd fra Twilio");
   });
 
   // Når OpenAI sender svar
@@ -98,22 +101,25 @@ wss.on("connection", async (twilioSocket) => {
     try {
       const event = JSON.parse(data.toString());
       if (event.type === "response.output_text.delta") {
-        console.log("AI siger:", event.delta);
+        console.log("💬 Heino siger:", event.delta);
       }
     } catch (err) {
       console.error("Fejl i OpenAI-event:", err);
     }
   });
 
-  // Ryd op når forbindelsen lukker
+  // Luk forbindelser pænt
   twilioSocket.on("close", () => {
-    console.log("Twilio stream closed");
+    console.log("🔕 Twilio stream closed");
     openaiSocket.close();
   });
 
-  openaiSocket.on("close", () => console.log("OpenAI socket closed"));
-  openaiSocket.on("error", (err) => console.error("OpenAI socket error:", err));
+  openaiSocket.on("close", () => console.log("🧠 OpenAI socket closed"));
+  openaiSocket.on("error", (err) =>
+    console.error("OpenAI socket error:", err)
+  );
 });
 
+// Start serveren
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server kører på port ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 Server kører på port ${PORT}`));
