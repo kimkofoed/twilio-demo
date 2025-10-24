@@ -54,8 +54,9 @@ wss.on("connection", (twilioSocket) => {
 
   // 🔌 Forbind til Gemini Live
 const GEMINI_WS_URL =
-  "wss://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-live:streamGenerateContent?alt=ws&key=" +
+  "wss://generativelanguage.googleapis.com/v1alpha/models/gemini-2.5-flash:streamGenerateContent?alt=ws&key=" +
   process.env.GEMINI_API_KEY;
+
 
   console.log("🔌 Forbinder til Gemini Live API...");
   const geminiSocket = new WebSocket(GEMINI_WS_URL);
