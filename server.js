@@ -70,6 +70,7 @@ wss.on("connection", (twilioSocket) => {
       headers: {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         "OpenAI-Beta": "realtime=v1",
+        "Sec-WebSocket-Protocol": "realtime", // 👈 vigtig header!
       },
     }
   );
@@ -83,29 +84,33 @@ wss.on("connection", (twilioSocket) => {
     openaiReady = true;
 
     // Konfigurer Heino-sessionen
-    openaiSocket.send(JSON.stringify({
-      type: "session.update",
-      session: {
-        modalities: ["audio", "text"],
-        voice: "alloy",
-        input_audio_format: "pcm16",
-        output_audio_format: "mulaw",
-        instructions: `
-          Du er Heino, en sjov og venlig dansk AI-assistent.
-          Du taler afslappet og hjælper dem, der ringer til Jens og Kim.
-          Stil et par spørgsmål for at forstå, hvorfor de ringer, og svar med lidt humor.
-        `,
-      },
-    }));
+    openaiSocket.send(
+      JSON.stringify({
+        type: "session.update",
+        session: {
+          modalities: ["audio", "text"],
+          voice: "alloy",
+          input_audio_format: "pcm16",
+          output_audio_format: "mulaw",
+          instructions: `
+            Du er Heino, en sjov og venlig dansk AI-assistent.
+            Du taler afslappet og hjælper dem, der ringer til Jens og Kim.
+            Stil et par spørgsmål for at forstå, hvorfor de ringer, og svar med lidt humor.
+          `,
+        },
+      })
+    );
 
     // Start med en velkomst
-    openaiSocket.send(JSON.stringify({
-      type: "response.create",
-      response: {
-        modalities: ["audio", "text"],
-        instructions: "Sig højt: 'Hej, jeg er Heino. Hvordan går det?' på dansk.",
-      },
-    }));
+    openaiSocket.send(
+      JSON.stringify({
+        type: "response.create",
+        response: {
+          modalities: ["audio", "text"],
+          instructions: "Sig højt: 'Hej, jeg er Heino. Hvordan går det?' på dansk.",
+        },
+      })
+    );
 
     bufferedAudio.forEach((chunk) => openaiSocket.send(chunk));
     bufferedAudio.length = 0;
@@ -124,13 +129,16 @@ wss.on("connection", (twilioSocket) => {
         if (data.event === "stop" && openaiReady) {
           console.log("🛑 Stop event — sender commit til OpenAI");
           openaiSocket.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-          openaiSocket.send(JSON.stringify({
-            type: "response.create",
-            response: {
-              modalities: ["audio", "text"],
-              instructions: "Svar højt og venligt på dansk med lidt humor.",
-            },
-          }));
+          openaiSocket.send(
+            JSON.stringify({
+              type: "response.create",
+              response: {
+                modalities: ["audio", "text"],
+                instructions:
+                  "Svar højt og venligt på dansk med lidt humor.",
+              },
+            })
+          );
         }
         return;
       }
@@ -140,10 +148,17 @@ wss.on("connection", (twilioSocket) => {
 
       const rawAudio = Buffer.from(payloadStr, "base64");
       let pcm16;
-      try { pcm16 = mulaw.decode(rawAudio); } catch { pcm16 = rawAudio; }
+      try {
+        pcm16 = mulaw.decode(rawAudio);
+      } catch {
+        pcm16 = rawAudio;
+      }
 
       const base64Pcm = Buffer.from(pcm16.buffer || pcm16).toString("base64");
-      const payload = JSON.stringify({ type: "input_audio_buffer.append", audio: base64Pcm });
+      const payload = JSON.stringify({
+        type: "input_audio_buffer.append",
+        audio: base64Pcm,
+      });
 
       if (openaiReady) openaiSocket.send(payload);
       else bufferedAudio.push(payload);
@@ -151,18 +166,22 @@ wss.on("connection", (twilioSocket) => {
       if (openaiReady && !twilioSocket.commitTimer) {
         twilioSocket.commitTimer = setInterval(() => {
           console.log("🕑 Commit + Response trigger");
-          openaiSocket.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-          openaiSocket.send(JSON.stringify({
-            type: "response.create",
-            response: {
-              modalities: ["audio", "text"],
-              instructions: `
-                Du er Heino, en venlig dansk AI-assistent.
-                Du hører hvad der bliver sagt, og svarer højt og tydeligt på dansk.
-                Brug en afslappet og sjov tone. Hvis du ikke hører noget tydeligt, sig: "Jeg hørte dig ikke helt, kan du gentage det?"
-              `,
-            },
-          }));
+          openaiSocket.send(
+            JSON.stringify({ type: "input_audio_buffer.commit" })
+          );
+          openaiSocket.send(
+            JSON.stringify({
+              type: "response.create",
+              response: {
+                modalities: ["audio", "text"],
+                instructions: `
+                  Du er Heino, en venlig dansk AI-assistent.
+                  Du hører hvad der bliver sagt, og svarer højt og tydeligt på dansk.
+                  Brug en afslappet og sjov tone. Hvis du ikke hører noget tydeligt, sig: "Jeg hørte dig ikke helt, kan du gentage det?"
+                `,
+              },
+            })
+          );
         }, 2500);
       }
     } catch (err) {
@@ -177,10 +196,12 @@ wss.on("connection", (twilioSocket) => {
       if (msg.type === "response.output_audio.delta" && msg.delta) {
         if (twilioSocket.readyState === WebSocket.OPEN) {
           console.log("🎙️ Sender lyd fra Heino til Twilio");
-          twilioSocket.send(JSON.stringify({
-            event: "media",
-            media: { payload: msg.delta },
-          }));
+          twilioSocket.send(
+            JSON.stringify({
+              event: "media",
+              media: { payload: msg.delta },
+            })
+          );
         }
       }
 
@@ -188,8 +209,13 @@ wss.on("connection", (twilioSocket) => {
         console.log("💬 Heino siger:", msg.delta);
       }
 
-      if (msg.type === "response.completed" && twilioSocket.readyState === WebSocket.OPEN) {
-        twilioSocket.send(JSON.stringify({ event: "mark", mark: { name: "done" } }));
+      if (
+        msg.type === "response.completed" &&
+        twilioSocket.readyState === WebSocket.OPEN
+      ) {
+        twilioSocket.send(
+          JSON.stringify({ event: "mark", mark: { name: "done" } })
+        );
       }
     } catch (err) {
       console.error("❌ Fejl i OpenAI event:", err);
