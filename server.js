@@ -36,7 +36,7 @@ const wss = new WebSocket.Server({ server, path: "/media" });
 wss.on("connection", (twilioSocket) => {
   console.log("🔊 Twilio stream connected");
 
-  // Forbind til OpenAI Realtime API
+  // Opret forbindelse til OpenAI Realtime API
   const openaiSocket = new WebSocket(
     "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01",
     {
@@ -47,8 +47,15 @@ wss.on("connection", (twilioSocket) => {
     }
   );
 
+  let openaiReady = false;
+  const bufferedAudio = [];
+
+  // Når OpenAI socket åbner
   openaiSocket.on("open", () => {
     console.log("🧠 OpenAI Realtime API connected");
+    openaiReady = true;
+
+    // Send Heino’s instruktioner
     openaiSocket.send(
       JSON.stringify({
         type: "session.update",
@@ -64,24 +71,33 @@ wss.on("connection", (twilioSocket) => {
         },
       })
     );
+
+    // Hvis Twilio allerede har sendt lyd, så send den nu
+    bufferedAudio.forEach((audio) => openaiSocket.send(audio));
+    bufferedAudio.length = 0;
   });
 
-  // Når Twilio sender lyd → send det til OpenAI
+  // Når Twilio sender lyd → send til OpenAI (eller buffer hvis ikke klar)
   twilioSocket.on("message", (msg) => {
     const data = JSON.parse(msg.toString());
+
     if (data.event === "media") {
-      // Twilio sender base64 mu-law lyd
       const mulawAudio = Buffer.from(data.media.payload, "base64");
-      // Send som base64 PCM til OpenAI (OpenAI håndterer formatet via "input_audio_buffer.append")
-      openaiSocket.send(
-        JSON.stringify({
-          type: "input_audio_buffer.append",
-          audio: mulawAudio.toString("base64"),
-        })
-      );
+      const payload = JSON.stringify({
+        type: "input_audio_buffer.append",
+        audio: mulawAudio.toString("base64"),
+      });
+
+      if (openaiReady) {
+        openaiSocket.send(payload);
+      } else {
+        bufferedAudio.push(payload);
+      }
     } else if (data.event === "stop") {
-      openaiSocket.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
-      openaiSocket.send(JSON.stringify({ type: "response.create" }));
+      if (openaiReady) {
+        openaiSocket.send(JSON.stringify({ type: "input_audio_buffer.commit" }));
+        openaiSocket.send(JSON.stringify({ type: "response.create" }));
+      }
     }
   });
 
@@ -90,7 +106,7 @@ wss.on("connection", (twilioSocket) => {
     try {
       const msg = JSON.parse(event.toString());
 
-      // Når OpenAI sender lydchunks tilbage
+      // OpenAI sender lyd tilbage som base64 mu-law
       if (msg.type === "response.output_audio.delta" && msg.delta) {
         twilioSocket.send(
           JSON.stringify({
@@ -104,7 +120,7 @@ wss.on("connection", (twilioSocket) => {
         twilioSocket.send(JSON.stringify({ event: "mark", mark: { name: "done" } }));
       }
 
-      // Tekst til debugging i Render logs
+      // Log AI-tekst i Render
       if (msg.type === "response.output_text.delta") {
         console.log("💬 Heino siger:", msg.delta);
       }
