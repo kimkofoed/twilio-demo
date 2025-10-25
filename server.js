@@ -50,7 +50,7 @@ fastify.get('/', async (request, reply) => {
 });
 
 // Route for Twilio to handle incoming and outgoing calls
-fastify.all('/incoming-call', async (request, reply) => {
+fastify.all('/voice', async (request, reply) => {
     console.log('Incoming call');
 
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
